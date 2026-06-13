@@ -1,0 +1,41 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-v --tb=short"
+
+[coverage:run]
+source = ["src/jobagent"]
+omit = [
+    "src/jobagent/main.py",
+    "src/jobagent/config/*",
+    "src/jobagent/infrastructure/database_cluster.py",
+    "src/jobagent/infrastructure/distributed.py"
+]
+
+[coverage:report]
+show_missing = true
+fail_under = 80
+
+[tool.black]
+target-version = "py310"
+include = "*.py"
+exclude = '''
+/(
+    \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | _build
+  | buck-out
+  | build
+  | dist
+)/
+'''
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+include_trailing_comma = true
+force_alphabetical_sort = true

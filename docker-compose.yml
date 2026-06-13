@@ -1,0 +1,150 @@
+
+version: '3.8'
+
+services:
+  # PostgreSQL 主库
+  postgres-master:
+    image: postgres:16-alpine
+    container_name: postgres-master
+    environment:
+      POSTGRES_DB: jobagent
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+    volumes:
+      - postgres_master_data:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d jobagent"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - jobagent-network
+
+  # PostgreSQL 从库（可选）
+  postgres-slave:
+    image: postgres:16-alpine
+    container_name: postgres-slave
+    environment:
+      POSTGRES_DB: jobagent
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password
+    volumes:
+      - postgres_slave_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    depends_on:
+      - postgres-master
+    networks:
+      - jobagent-network
+
+  # Redis
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - jobagent-network
+
+  # Job Agent API 服务
+  jobagent-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: jobagent-api
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://admin:password@postgres-master:5432/jobagent
+      - REDIS_URL=redis://redis:6379/0
+      - SECRET_KEY=your-secret-key-change-in-production
+      - LOG_LEVEL=INFO
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres-master:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - jobagent-network
+    deploy:
+      replicas: 3
+
+  # Celery Worker
+  celery-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: celery-worker
+    command: celery -A src.jobagent.infrastructure.task_queue.celery worker --loglevel=info
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://admin:password@postgres-master:5432/jobagent
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    depends_on:
+      postgres-master:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - jobagent-network
+    deploy:
+      replicas: 2
+
+  # Celery Beat
+  celery-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: celery-beat
+    command: celery -A src.jobagent.infrastructure.task_queue.celery beat --loglevel=info
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - jobagent-network
+
+  # Nginx 负载均衡
+  nginx:
+    image: nginx:alpine
+    container_name: nginx
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - jobagent-api
+    networks:
+      - jobagent-network
+
+volumes:
+  postgres_master_data:
+  postgres_slave_data:
+  redis_data:
+
+networks:
+  jobagent-network:
+    driver: bridge
